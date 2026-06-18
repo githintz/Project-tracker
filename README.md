@@ -13,9 +13,10 @@ perfectly on GitHub Pages.
   Connections are drawn as arrows between cards, and **Arrange** lays linked
   projects out as a left-to-right **tree** (it falls back to a tidy grid when
   nothing is linked).
-- **Next step** — alongside the update history, each project has a “next step”
-  so you always know what you want to do next. Editable inline from the detail
-  view or in the project form.
+- **Next step / goals** — each project has a “next step” so you always know what
+  you want to do next, editable inline from the detail view or in the project
+  form. Whenever you set or change it, the goal is also logged into the project
+  timeline (in the accent colour, so goals stand apart from progress updates).
 - **Hover previews** — hovering a card shows its next step and three most recent
   updates.
 - **Project detail** — click a card to expand it: full description, tags,
@@ -85,6 +86,7 @@ enable real-time read-only sharing:
      id          uuid primary key,
      project_id  uuid not null references projects (id) on delete cascade,
      body        text not null,
+     kind        text default 'update',   -- 'update' or 'goal'
      created_at  timestamptz default now()
    );
 
@@ -106,6 +108,7 @@ enable real-time read-only sharing:
    ```sql
    alter table projects add column if not exists next_step text default '';
    alter table projects add column if not exists parents  uuid[] default '{}';
+   alter table updates  add column if not exists kind     text default 'update';
    alter publication supabase_realtime add table projects;
    alter publication supabase_realtime add table updates;
    ```

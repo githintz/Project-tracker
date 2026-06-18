@@ -54,11 +54,20 @@ const escapeHtml = (s) =>
 
 const byId = (id) => state.projects.find((p) => p.id === id);
 
+/* Every timeline entry lives in state.updates. Regular progress logs have
+   kind "update"; goals (next steps, logged when set/changed) have kind "goal"
+   and are rendered in the accent colour to stand apart from updates. */
 function projectUpdates(id) {
   return state.updates
     .filter((u) => u.project_id === id)
     .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 }
+
+const isGoalEntry = (u) => u.kind === "goal";
+const progressUpdates = (id) => projectUpdates(id).filter((u) => !isGoalEntry(u));
+
+const makeGoal = (projectId, text) =>
+  ({ id: uid(), project_id: projectId, body: text, created_at: new Date().toISOString(), kind: "goal" });
 
 function childrenOf(id) {
   return state.projects.filter((p) => (p.parents ?? []).includes(id));
@@ -242,9 +251,10 @@ function render() {
     card.style.setProperty("--card-accent", p.color || COLORS[0]);
     card.style.animationDelay = `${Math.min(i * 60, 400)}ms`;
 
-    const updates = projectUpdates(p.id);
-    const last = updates[updates.length - 1];
-    const previewItems = updates.slice(-3).reverse();
+    const entries = projectUpdates(p.id);
+    const updates = entries.filter((u) => !isGoalEntry(u));
+    const last = entries[entries.length - 1];          // latest activity of any kind
+    const previewItems = updates.slice(-3).reverse();  // preview shows progress updates
     const linkCount = (p.parents?.length ?? 0) + childrenOf(p.id).length;
 
     card.innerHTML = `
@@ -392,19 +402,22 @@ function renderDetail() {
   // linked projects
   renderLinks(p);
 
-  // updates timeline
-  const updates = projectUpdates(p.id);
-  $("#update-count").textContent = updates.length;
+  // timeline: progress updates + goals, interleaved by time
+  const entries = projectUpdates(p.id);
+  $("#update-count").textContent = entries.length;
   const timeline = $("#timeline");
-  timeline.innerHTML = updates.length
-    ? updates.map((u, i) => `
-        <li class="timeline-item" style="animation-delay:${Math.min(i * 40, 300)}ms">
+  timeline.innerHTML = entries.length
+    ? entries.map((u, i) => {
+        const goal = isGoalEntry(u);
+        return `
+        <li class="timeline-item ${goal ? "goal" : ""}" style="animation-delay:${Math.min(i * 40, 300)}ms">
           <time datetime="${u.created_at}">${fmtFull(u.created_at)}</time>
-          <div class="update-body">${escapeHtml(u.body)}<button class="update-delete" data-update="${u.id}" title="Delete update">
+          <div class="update-body">${goal ? `<span class="entry-tag">Goal</span>` : ""}${escapeHtml(u.body)}<button class="update-delete" data-update="${u.id}" title="Delete entry">
             <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
           </button></div>
-        </li>`).join("")
-    : `<li class="timeline-empty">No updates yet.${viewerMode ? "" : " Log your first one below."}</li>`;
+        </li>`;
+      }).join("")
+    : `<li class="timeline-empty">Nothing logged yet.${viewerMode ? "" : " Add an update or set a next step."}</li>`;
 }
 
 function renderLinks(p) {
@@ -446,7 +459,7 @@ function closeComposer() {
 async function saveUpdate() {
   const body = $("#composer-text").value.trim();
   if (!body || !openProjectId) return;
-  const update = { id: uid(), project_id: openProjectId, body, created_at: new Date().toISOString() };
+  const update = { id: uid(), project_id: openProjectId, body, created_at: new Date().toISOString(), kind: "update" };
   state.updates.push(update);
   closeComposer();
   renderDetail();
@@ -471,10 +484,18 @@ function openNextStepEditor() {
 async function saveNextStep() {
   const p = byId(openProjectId);
   if (!p) return;
-  p.next_step = $("#nextstep-input").value.trim();
+  const prev = (p.next_step ?? "").trim();
+  const next = $("#nextstep-input").value.trim();
+  p.next_step = next;
+  // a new, non-empty goal is logged to the timeline so you can see goal history
+  const goal = (next && next !== prev) ? makeGoal(p.id, next) : null;
+  if (goal) state.updates.push(goal);
   renderDetail();
   render();
-  try { await backend.upsertProject(p); } catch (err) { syncFail(err); }
+  try {
+    await backend.upsertProject(p);
+    if (goal) await backend.addUpdate(goal);
+  } catch (err) { syncFail(err); }
 }
 
 /* ---------------- project create / edit ---------------- */
@@ -519,6 +540,7 @@ async function submitProject(e) {
   const tags = $("#f-tags").value.split(",").map((t) => t.trim()).filter(Boolean);
   const parents = [...$("#f-parents").selectedOptions].map((o) => o.value);
   const existing = byId(editingProjectId);
+  const prevNext = (existing?.next_step ?? "").trim();
 
   const project = existing
     ? { ...existing, name, description: $("#f-desc").value.trim(), next_step: $("#f-next").value.trim(),
@@ -536,10 +558,18 @@ async function submitProject(e) {
   if (existing) Object.assign(existing, project);
   else state.projects.push(project);
 
+  // log the next step as a goal entry when it's newly set or changed
+  const goal = (project.next_step && project.next_step !== prevNext)
+    ? makeGoal(project.id, project.next_step) : null;
+  if (goal) state.updates.push(goal);
+
   $("#project-modal").hidden = true;
   render();
   if (openProjectId) renderDetail();
-  try { await backend.upsertProject(project); } catch (err) { syncFail(err); }
+  try {
+    await backend.upsertProject(project);
+    if (goal) await backend.addUpdate(goal);
+  } catch (err) { syncFail(err); }
 }
 
 /* ---------------- confirm dialog ---------------- */

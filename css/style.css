@@ -897,6 +897,34 @@ body.light .overlay-backdrop { background: rgba(30, 34, 60, 0.32); }
 .update-delete:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 body.viewer .update-delete { display: none; }
 
+/* goal entries — same accent as the update compose box, to set them apart */
+.timeline-item.goal::before {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.timeline-item.goal .update-body {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.timeline-item.goal:hover .update-body {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.entry-tag {
+  display: inline-block;
+  margin: 0 8px 2px 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--accent);
+  vertical-align: 1px;
+}
+
 .timeline-empty { padding: 4px 0 18px; color: var(--text-faint); font-size: 0.86rem; font-style: italic; }
 
 .add-update {
