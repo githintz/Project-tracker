@@ -3,9 +3,9 @@
 
    Two interchangeable backends:
      - LocalBackend    → localStorage, zero setup (default)
-     - SupabaseBackend → cloud sync across devices (optional)
+     - SupabaseBackend → cloud sync + realtime + sharing (optional)
 
-   Both expose the same async API:
+   Shared async API:
      loadAll()                       → { projects, updates }
      upsertProject(project)
      deleteProject(id)               (also removes its updates)
@@ -13,6 +13,7 @@
      savePositions([{id,x,y}, …])
      addUpdate(update)
      deleteUpdate(id)
+     subscribe(onChange) / unsubscribe()   (realtime; local = no-op)
    ============================================================ */
 
 const LS_DATA_KEY = "orbit.data.v1";
@@ -20,6 +21,22 @@ const LS_SYNC_KEY = "orbit.supabase.v1";
 
 export const uid = () =>
   crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+/* Normalise a project record coming from either backend so the rest of the
+   app can assume these fields always exist. */
+export function normalizeProject(p) {
+  return {
+    ...p,
+    description: p.description ?? "",
+    status: p.status ?? "active",
+    color: p.color ?? "#7c6cff",
+    tags: Array.isArray(p.tags) ? p.tags : [],
+    parents: Array.isArray(p.parents) ? p.parents : [],
+    next_step: p.next_step ?? "",
+    x: typeof p.x === "number" ? p.x : 0,
+    y: typeof p.y === "number" ? p.y : 0,
+  };
+}
 
 /* ---------------- localStorage backend ---------------- */
 
@@ -84,21 +101,27 @@ class LocalBackend {
     this.data.updates = this.data.updates.filter((u) => u.id !== id);
     this._write();
   }
+
+  subscribe() { /* no realtime for local storage */ }
+  unsubscribe() {}
 }
 
 /* ---------------- Supabase backend ----------------
-   Expects two tables (see README.md for the SQL):
-     projects(id uuid pk, name, description, status, color, tags text[], x, y, created_at)
+   Tables (see README.md for the SQL):
+     projects(id uuid pk, name, description, status, color, tags text[],
+              parents uuid[], next_step text, x, y, created_at)
      updates(id uuid pk, project_id uuid fk, body, created_at)
 ---------------------------------------------------- */
 
 class SupabaseBackend {
-  constructor(client) {
+  constructor(client, readOnly = false) {
     this.kind = "supabase";
     this.client = client;
+    this.readOnly = readOnly;
+    this.channel = null;
   }
 
-  static async connect(url, anonKey) {
+  static async connect(url, anonKey, readOnly = false) {
     const { createClient } = await import(
       "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm"
     );
@@ -108,7 +131,7 @@ class SupabaseBackend {
     if (probe.error) throw new Error(probe.error.message);
     const probe2 = await client.from("updates").select("id").limit(1);
     if (probe2.error) throw new Error(probe2.error.message);
-    return new SupabaseBackend(client);
+    return new SupabaseBackend(client, readOnly);
   }
 
   async loadAll() {
@@ -127,7 +150,6 @@ class SupabaseBackend {
   }
 
   async deleteProject(id) {
-    // updates are removed by the ON DELETE CASCADE foreign key
     const { error } = await this.client.from("projects").delete().eq("id", id);
     if (error) throw new Error(error.message);
   }
@@ -150,6 +172,22 @@ class SupabaseBackend {
     const { error } = await this.client.from("updates").delete().eq("id", id);
     if (error) throw new Error(error.message);
   }
+
+  subscribe(onChange) {
+    this.unsubscribe();
+    this.channel = this.client
+      .channel("orbit-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, onChange)
+      .on("postgres_changes", { event: "*", schema: "public", table: "updates" }, onChange)
+      .subscribe();
+  }
+
+  unsubscribe() {
+    if (this.channel) {
+      this.client.removeChannel(this.channel);
+      this.channel = null;
+    }
+  }
 }
 
 /* ---------------- backend selection ---------------- */
@@ -167,8 +205,8 @@ export function saveSyncConfig(cfg) {
   else localStorage.removeItem(LS_SYNC_KEY);
 }
 
-export async function connectSupabase(url, anonKey) {
-  return SupabaseBackend.connect(url, anonKey);
+export async function connectSupabase(url, anonKey, readOnly = false) {
+  return SupabaseBackend.connect(url, anonKey, readOnly);
 }
 
 export function localBackend() {
