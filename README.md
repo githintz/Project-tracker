@@ -17,6 +17,12 @@ perfectly on GitHub Pages.
   you want to do next, editable inline from the detail view or in the project
   form. Whenever you set or change it, the goal is also logged into the project
   timeline (in the accent colour, so goals stand apart from progress updates).
+- **Resources** — save links (papers, docs, references) on a project, and attach
+  links to an individual update too. They show as clickable chips in the detail
+  view and timeline.
+- **Idea bin** — a separate place to park ideas for the future (open it from the
+  top bar). Each idea is a quick note with a colour; promote one to a full
+  project on your board whenever it's ready.
 - **Hover previews** — hovering a card shows its next step and three most recent
   updates.
 - **Project detail** — click a card to expand it: full description, tags,
@@ -77,6 +83,7 @@ enable real-time read-only sharing:
      color       text default '#7c6cff',
      tags        text[] default '{}',
      parents     uuid[] default '{}',   -- ids of projects this one follows from
+     resources   jsonb default '[]',    -- [{ url, title }]
      x           double precision default 0,
      y           double precision default 0,
      created_at  timestamptz default now()
@@ -87,6 +94,15 @@ enable real-time read-only sharing:
      project_id  uuid not null references projects (id) on delete cascade,
      body        text not null,
      kind        text default 'update',   -- 'update' or 'goal'
+     resources   jsonb default '[]',      -- [{ url, title }]
+     created_at  timestamptz default now()
+   );
+
+   create table ideas (
+     id          uuid primary key,
+     title       text not null,
+     body        text default '',
+     color       text default '#ffc36c',
      created_at  timestamptz default now()
    );
 
@@ -95,22 +111,37 @@ enable real-time read-only sharing:
    -- share the key publicly (see "Locking down sharing" below).
    alter table projects enable row level security;
    alter table updates  enable row level security;
+   alter table ideas    enable row level security;
    create policy "anon full access" on projects for all using (true) with check (true);
    create policy "anon full access" on updates  for all using (true) with check (true);
+   create policy "anon full access" on ideas    for all using (true) with check (true);
 
    -- Enable real-time so shared viewers (and your other devices) update live.
    alter publication supabase_realtime add table projects;
    alter publication supabase_realtime add table updates;
+   alter publication supabase_realtime add table ideas;
    ```
 
-   **Already had the earlier (v1) tables?** Just add the new columns:
+   **Already had an earlier version of the tables?** Add what's new (each line is
+   safe to run even if it already exists):
 
    ```sql
    alter table projects add column if not exists next_step text default '';
-   alter table projects add column if not exists parents  uuid[] default '{}';
-   alter table updates  add column if not exists kind     text default 'update';
+   alter table projects add column if not exists parents   uuid[] default '{}';
+   alter table projects add column if not exists resources jsonb default '[]';
+   alter table updates  add column if not exists kind      text default 'update';
+   alter table updates  add column if not exists resources jsonb default '[]';
+
+   create table if not exists ideas (
+     id uuid primary key, title text not null, body text default '',
+     color text default '#ffc36c', created_at timestamptz default now()
+   );
+   alter table ideas enable row level security;
+   create policy "anon full access" on ideas for all using (true) with check (true);
+
    alter publication supabase_realtime add table projects;
    alter publication supabase_realtime add table updates;
+   alter publication supabase_realtime add table ideas;
    ```
 
 3. In Orbit, click the **Local** button in the top bar, paste your project URL
@@ -119,6 +150,18 @@ enable real-time read-only sharing:
 
 The connection details are stored in your browser; click the same button to
 disconnect and fall back to local storage at any time.
+
+### Seeing your projects on another device (e.g. your phone)
+
+Without Supabase, Orbit keeps data in the browser's localStorage, which is
+**per-device** — so opening the plain site URL on your phone shows an empty board
+("no projects") because that device has its own empty storage. To see your
+projects on another device you have two options:
+
+- **Connect that device to the same Supabase project** (top-bar **Local** button,
+  same URL + anon key), or
+- **Open a Share link** generated from the device that has your data — it carries
+  the connection details, loads your board in real time, and works on mobile.
 
 ### Sharing your board (read-only)
 

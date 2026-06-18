@@ -6,13 +6,14 @@
      - SupabaseBackend → cloud sync + realtime + sharing (optional)
 
    Shared async API:
-     loadAll()                       → { projects, updates }
+     loadAll()                       → { projects, updates, ideas }
      upsertProject(project)
      deleteProject(id)               (also removes its updates)
      savePosition(id, x, y)
      savePositions([{id,x,y}, …])
      addUpdate(update)
      deleteUpdate(id)
+     upsertIdea(idea) / deleteIdea(id)
      subscribe(onChange) / unsubscribe()   (realtime; local = no-op)
    ============================================================ */
 
@@ -22,8 +23,8 @@ const LS_SYNC_KEY = "orbit.supabase.v1";
 export const uid = () =>
   crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-/* Normalise a project record coming from either backend so the rest of the
-   app can assume these fields always exist. */
+/* ---- normalisers: guarantee shape regardless of backend / data age ---- */
+
 export function normalizeProject(p) {
   return {
     ...p,
@@ -33,8 +34,26 @@ export function normalizeProject(p) {
     tags: Array.isArray(p.tags) ? p.tags : [],
     parents: Array.isArray(p.parents) ? p.parents : [],
     next_step: p.next_step ?? "",
+    resources: Array.isArray(p.resources) ? p.resources : [],
     x: typeof p.x === "number" ? p.x : 0,
     y: typeof p.y === "number" ? p.y : 0,
+  };
+}
+
+export function normalizeUpdate(u) {
+  return {
+    ...u,
+    kind: u.kind ?? "update",
+    resources: Array.isArray(u.resources) ? u.resources : [],
+  };
+}
+
+export function normalizeIdea(i) {
+  return {
+    ...i,
+    title: i.title ?? "",
+    body: i.body ?? "",
+    color: i.color ?? "#ffc36c",
   };
 }
 
@@ -51,10 +70,11 @@ class LocalBackend {
       const raw = JSON.parse(localStorage.getItem(LS_DATA_KEY));
       this.data = raw && Array.isArray(raw.projects)
         ? raw
-        : { projects: [], updates: [] };
+        : { projects: [], updates: [], ideas: [] };
     } catch {
-      this.data = { projects: [], updates: [] };
+      this.data = { projects: [], updates: [], ideas: [] };
     }
+    if (!Array.isArray(this.data.ideas)) this.data.ideas = [];
   }
 
   _write() {
@@ -102,15 +122,28 @@ class LocalBackend {
     this._write();
   }
 
+  async upsertIdea(idea) {
+    const i = this.data.ideas.findIndex((x) => x.id === idea.id);
+    if (i >= 0) this.data.ideas[i] = idea;
+    else this.data.ideas.push(idea);
+    this._write();
+  }
+
+  async deleteIdea(id) {
+    this.data.ideas = this.data.ideas.filter((x) => x.id !== id);
+    this._write();
+  }
+
   subscribe() { /* no realtime for local storage */ }
   unsubscribe() {}
 }
 
 /* ---------------- Supabase backend ----------------
    Tables (see README.md for the SQL):
-     projects(id uuid pk, name, description, status, color, tags text[],
-              parents uuid[], next_step text, x, y, created_at)
-     updates(id uuid pk, project_id uuid fk, body, created_at)
+     projects(id, name, description, next_step, status, color, tags text[],
+              parents uuid[], resources jsonb, x, y, created_at)
+     updates(id, project_id fk, body, kind, resources jsonb, created_at)
+     ideas(id, title, body, color, created_at)
 ---------------------------------------------------- */
 
 class SupabaseBackend {
@@ -126,7 +159,6 @@ class SupabaseBackend {
       "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm"
     );
     const client = createClient(url, anonKey);
-    // Probe both tables so a bad URL/key/schema fails here, not mid-use.
     const probe = await client.from("projects").select("id").limit(1);
     if (probe.error) throw new Error(probe.error.message);
     const probe2 = await client.from("updates").select("id").limit(1);
@@ -141,7 +173,11 @@ class SupabaseBackend {
     ]);
     if (p.error) throw new Error(p.error.message);
     if (u.error) throw new Error(u.error.message);
-    return { projects: p.data ?? [], updates: u.data ?? [] };
+    // ideas table is optional / may not be migrated yet — tolerate its absence
+    let ideas = [];
+    const iq = await this.client.from("ideas").select("*").order("created_at");
+    if (!iq.error) ideas = iq.data ?? [];
+    return { projects: p.data ?? [], updates: u.data ?? [], ideas };
   }
 
   async upsertProject(project) {
@@ -173,12 +209,23 @@ class SupabaseBackend {
     if (error) throw new Error(error.message);
   }
 
+  async upsertIdea(idea) {
+    const { error } = await this.client.from("ideas").upsert(idea);
+    if (error) throw new Error(error.message);
+  }
+
+  async deleteIdea(id) {
+    const { error } = await this.client.from("ideas").delete().eq("id", id);
+    if (error) throw new Error(error.message);
+  }
+
   subscribe(onChange) {
     this.unsubscribe();
     this.channel = this.client
       .channel("orbit-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, onChange)
       .on("postgres_changes", { event: "*", schema: "public", table: "updates" }, onChange)
+      .on("postgres_changes", { event: "*", schema: "public", table: "ideas" }, onChange)
       .subscribe();
   }
 
@@ -213,7 +260,6 @@ export function localBackend() {
   return new LocalBackend();
 }
 
-/* Boot with Supabase when configured, falling back to local on failure. */
 export async function initBackend() {
   const cfg = getSyncConfig();
   if (cfg?.url && cfg?.key) {
